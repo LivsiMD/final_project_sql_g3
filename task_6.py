@@ -3,8 +3,7 @@ import psycopg2
 
 def start_planning(year, quarter, user, pwd):
     quarterid = f"{year}.{quarter}"  # Форматирование квартала по шаблону "YYYY.Q"
-    quarterid_1 = f"{year-1}.{quarter}"
-    quarterid_2 = f"{year - 2}.{quarter}"
+    print(year-1)
 
     con = psycopg2.connect(database="plan_test_ip", user=user, password=pwd, host="localhost", port="5432")
     cur = con.cursor()
@@ -28,32 +27,37 @@ def start_planning(year, quarter, user, pwd):
         # Шаг 4: Вставка данных в таблицу plan_data
         cur.execute("""
         INSERT INTO plan_data (versionid, country, quarterid, pcid, salesamt)
-        select distinct 'N' as versionid, countrycode as country, %s as quarterid, categoryid as pcid,  
-        case
-        WHEN COUNT(qr) over (partition by countrycode, categoryid) = 1 then sum(csalesqr) over (partition by countrycode, categoryid)
-        else sum(csalesqr) over (partition by countrycode, categoryid) /2
-        END AS salesamt
-        from (
-        select distinct cs.categoryid, c.countrycode, cs.qr, sum(cs.salesamt) over (partition by cs.categoryid order by cs.qr, c.countrycode) as csalesqr
-        from company_sales cs
-        join company c on c.id = cs.cid 
-        where cs.ccls in ('A', 'B') and  cs.qr in (%s, %s)
-        order by cs.categoryid
-        ) AS sub
-        GROUP BY 
-            countrycode, categoryid, qr, csalesqr
-        order by countrycode
-        """, [quarterid, quarterid_2, quarterid_1])
+            SELECT DISTINCT
+                'N' AS versionid,
+                c.countrycode AS country,
+                concat_ws('.', %s, %s) AS quarterid,
+                cs.categoryid AS pcid,
+                avg(sum(cs.salesamt)) over(PARTITION BY c.countrycode, cs.categoryid) AS salesamt
+            FROM company c 
+                LEFT JOIN company_sales cs ON c.id = cs.cid 
+            WHERE 
+                cs.ccls IN ('A', 'B')  
+                AND cs."year"  IN (%s, %s)
+                AND cs.quarter_yr = %s 
+            GROUP BY 
+                c.countrycode,
+                cs.categoryid,
+                cs.qr
+            ORDER BY 
+                c.countrycode,
+                cs.categoryid;
+        """, [year, quarter, year-1, year-2, quarter])
 
         # Шаг 5 Копирование данных из версии N в версию P в таблице plan_data
         cur.execute("""
         INSERT INTO plan_data (versionid, country, quarterid, pcid, salesamt)
-        SELECT 'P', country, quarterid, pcid, salesamt
+        SELECT 'P' as versionid, country, quarterid, pcid, salesamt
         FROM plan_data
-        """)
+        WHERE 1 = 1 AND versionid = 'N' AND quarterid = concat_ws('.', %s, %s)
+        """, [year, quarter])
 
         # Шаг 6 Сохранение имени пользователя, выполняющего изменения, в записях plan_status
-        cur.execute("UPDATE plan_status SET author = %s", (user,))
+        cur.execute("UPDATE plan_status SET author = %s WHERE quarterid  = concat_ws('.', %s, %s);" , (user,year, quarter))
 
         con.commit()
 
